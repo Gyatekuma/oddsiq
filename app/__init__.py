@@ -369,3 +369,5 @@ def start_scheduler(app):
         if not scheduler.running:
             scheduler.start()
             logger.info('APScheduler started')
+
+app = create_app('development')
