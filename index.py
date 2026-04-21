@@ -1,14 +1,4 @@
-{
-  "builds": [
-    {
-      "src": "index.py",
-      "use": "@vercel/python"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "index.py"
-    }
-  ]
-}
+from app import create_app
+import os
+
+app = create_app(os.getenv('FLASK_CONFIG', 'production'))
