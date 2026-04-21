@@ -1,0 +1,199 @@
+"""Both Teams To Score (BTTS) prediction strategy."""
+import logging
+from .base_market_strategy import BaseMarketStrategy
+
+logger = logging.getLogger(__name__)
+
+
+class BTTSStrategy(BaseMarketStrategy):
+    """
+    Strategy for Both Teams To Score predictions.
+
+    Calculates probability based on:
+    - Team scoring rates (% of matches where team scores)
+    - Team clean sheet rates (% of matches with no goals conceded)
+    - Historical BTTS percentages
+    """
+
+    @property
+    def market_type(self) -> str:
+        return 'btts'
+
+    @property
+    def market_name(self) -> str:
+        return 'Both Teams To Score'
+
+    def get_valid_outcomes(self) -> list:
+        return ['yes', 'no']
+
+    def calculate_btts_probability(self, fixture):
+        """
+        Calculate BTTS probability.
+
+        BTTS Yes = P(Home scores) × P(Away scores)
+
+        Where:
+        - P(Home scores) = (100 - failed_to_score_rate) / 100
+        - P(Away scores) adjusted for opponent defensive strength
+        """
+        home_stats = self.get_team_stats(fixture.home_team_id)
+        away_stats = self.get_team_stats(fixture.away_team_id)
+
+        # Home team scoring probability
+        if hasattr(home_stats, 'get_scoring_rate'):
+            home_scoring_rate = home_stats.get_scoring_rate() / 100
+        else:
+            home_scoring_rate = 0.70  # Default
+
+        # Away team scoring probability
+        if hasattr(away_stats, 'get_scoring_rate'):
+            away_scoring_rate = away_stats.get_scoring_rate() / 100
+        else:
+            away_scoring_rate = 0.65  # Default (slightly lower for away)
+
+        # Factor in opponent's defensive record
+        if hasattr(away_stats, 'get_clean_sheet_rate'):
+            away_clean_sheet_rate = away_stats.get_clean_sheet_rate() / 100
+        else:
+            away_clean_sheet_rate = 0.30
+
+        if hasattr(home_stats, 'get_clean_sheet_rate'):
+            home_clean_sheet_rate = home_stats.get_clean_sheet_rate() / 100
+        else:
+            home_clean_sheet_rate = 0.35  # Home teams keep more clean sheets
+
+        # Adjust scoring probability based on opponent defense
+        # If opponent keeps many clean sheets, reduce scoring probability
+        home_vs_away_defense = home_scoring_rate * (1 - away_clean_sheet_rate * 0.5)
+        away_vs_home_defense = away_scoring_rate * (1 - home_clean_sheet_rate * 0.5)
+
+        # BTTS probability = both teams score
+        btts_probability = home_vs_away_defense * away_vs_home_defense
+
+        # Also consider historical BTTS rates
+        if hasattr(home_stats, 'btts_percentage') and home_stats.matches_played > 0:
+            home_btts_rate = home_stats.btts_percentage / 100
+            away_btts_rate = away_stats.btts_percentage / 100 if hasattr(away_stats, 'btts_percentage') else 0.5
+            historical_btts = (home_btts_rate + away_btts_rate) / 2
+
+            # Blend calculated and historical
+            btts_probability = (btts_probability * 0.6) + (historical_btts * 0.4)
+
+        return {
+            'btts_probability': btts_probability,
+            'home_scoring_rate': home_vs_away_defense,
+            'away_scoring_rate': away_vs_home_defense
+        }
+
+    def _calculate_confidence_from_probability(self, probability, outcome):
+        """Convert raw probability to confidence score based on outcome."""
+        if outcome == 'yes':
+            if probability > 0.5:
+                raw_confidence = 0.50 + (probability - 0.5) * 0.70
+            else:
+                raw_confidence = 0.40 + probability * 0.20
+        else:  # 'no'
+            no_probability = 1 - probability
+            if no_probability > 0.5:
+                raw_confidence = 0.50 + (no_probability - 0.5) * 0.70
+            else:
+                raw_confidence = 0.40 + no_probability * 0.20
+
+        # Cap confidence between 0.40 and 0.80
+        return max(0.40, min(0.80, raw_confidence))
+
+    def calculate_prediction(self, fixture, outcome=None, **kwargs):
+        """
+        Calculate BTTS prediction.
+
+        Args:
+            fixture: Fixture model instance
+            outcome: Specific outcome to predict ('yes' or 'no'). If None, predicts the most likely.
+
+        Returns:
+            dict with predicted_outcome ('yes' or 'no'), confidence_score, etc.
+        """
+        btts_data = self.calculate_btts_probability(fixture)
+        btts_prob = btts_data['btts_probability']
+
+        extra_data = {
+            'btts_probability': round(btts_prob * 100, 1),
+            'no_btts_probability': round((1 - btts_prob) * 100, 1),
+            'home_scoring_chance': round(btts_data['home_scoring_rate'] * 100, 1),
+            'away_scoring_chance': round(btts_data['away_scoring_rate'] * 100, 1)
+        }
+
+        # If specific outcome requested, return that
+        if outcome == 'yes':
+            confidence_score = self._calculate_confidence_from_probability(btts_prob, 'yes')
+            return {
+                'predicted_outcome': 'yes',
+                'confidence_score': confidence_score,
+                'model_probability': btts_prob,
+                'line_value': None,
+                'extra_data': extra_data
+            }
+        elif outcome == 'no':
+            confidence_score = self._calculate_confidence_from_probability(btts_prob, 'no')
+            return {
+                'predicted_outcome': 'no',
+                'confidence_score': confidence_score,
+                'model_probability': 1 - btts_prob,
+                'line_value': None,
+                'extra_data': extra_data
+            }
+
+        # Default: return the most likely outcome
+        if btts_prob > 0.5:
+            predicted_outcome = 'yes'
+            confidence_score = self._calculate_confidence_from_probability(btts_prob, 'yes')
+            model_probability = btts_prob
+        else:
+            predicted_outcome = 'no'
+            confidence_score = self._calculate_confidence_from_probability(btts_prob, 'no')
+            model_probability = 1 - btts_prob
+
+        return {
+            'predicted_outcome': predicted_outcome,
+            'confidence_score': confidence_score,
+            'model_probability': model_probability,
+            'line_value': None,
+            'extra_data': extra_data
+        }
+
+    def calculate_all_outcomes(self, fixture):
+        """
+        Calculate predictions for BOTH BTTS yes and no.
+
+        Returns:
+            list of dicts with predictions for both outcomes
+        """
+        btts_data = self.calculate_btts_probability(fixture)
+        btts_prob = btts_data['btts_probability']
+
+        extra_data = {
+            'btts_probability': round(btts_prob * 100, 1),
+            'no_btts_probability': round((1 - btts_prob) * 100, 1),
+            'home_scoring_chance': round(btts_data['home_scoring_rate'] * 100, 1),
+            'away_scoring_chance': round(btts_data['away_scoring_rate'] * 100, 1)
+        }
+
+        yes_confidence = self._calculate_confidence_from_probability(btts_prob, 'yes')
+        no_confidence = self._calculate_confidence_from_probability(btts_prob, 'no')
+
+        return [
+            {
+                'predicted_outcome': 'yes',
+                'confidence_score': yes_confidence,
+                'model_probability': btts_prob,
+                'line_value': None,
+                'extra_data': extra_data
+            },
+            {
+                'predicted_outcome': 'no',
+                'confidence_score': no_confidence,
+                'model_probability': 1 - btts_prob,
+                'line_value': None,
+                'extra_data': extra_data
+            }
+        ]
