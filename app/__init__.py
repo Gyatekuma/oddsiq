@@ -369,3 +369,14 @@ def start_scheduler(app):
         if not scheduler.running:
             scheduler.start()
             logger.info('APScheduler started')
+
+# everything above stays the same...
+
+def create_app(config_name):
+    app = Flask(__name__)
+    app.config.from_object(config[config_name])
+    return app
+
+
+import os
+app = create_app(os.getenv('FLASK_CONFIG', 'production'))
