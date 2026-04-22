@@ -370,4 +370,3 @@ def start_scheduler(app):
             scheduler.start()
             logger.info('APScheduler started')
 
-app = create_app('development')
